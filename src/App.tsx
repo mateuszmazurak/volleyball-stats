@@ -5,11 +5,14 @@ import Layout from 'components/layout/Layout'
 import LoginPage from 'pages/auth/LoginPage'
 import DashboardPage from 'pages/DashboardPage'
 import { TeamsPage, CreateTeamPage } from 'pages/teams/TeamsPage'
+import TeamDetailPage from 'pages/teams/TeamDetailPage'
 import { PlayersPage, CreatePlayerPage } from 'pages/players/PlayersPage'
+import PlayerStatsPage from 'pages/players/PlayerStatsPage'
 import MatchesPage from 'pages/matches/MatchesPage'
 import CreateMatchPage from 'pages/matches/CreateMatchPage'
 import MatchDetailPage from 'pages/matches/MatchDetailPage'
 import MatchRecordingPage from 'pages/matches/MatchRecordingPage'
+import MatchStatsPage from 'pages/matches/MatchStatsPage'
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, loading } = useAuth()
@@ -41,11 +44,14 @@ const AppRoutes: React.FC = () => {
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/druzyny" element={<TeamsPage />} />
               <Route path="/druzyny/nowa" element={<CreateTeamPage />} />
+              <Route path="/druzyny/:id" element={<TeamDetailPage />} />
               <Route path="/zawodnicy" element={<PlayersPage />} />
               <Route path="/zawodnicy/nowy" element={<CreatePlayerPage />} />
+              <Route path="/zawodnicy/:id/statystyki" element={<PlayerStatsPage />} />
               <Route path="/mecze" element={<MatchesPage />} />
               <Route path="/mecze/nowy" element={<CreateMatchPage />} />
               <Route path="/mecze/:id" element={<MatchDetailPage />} />
+              <Route path="/mecze/:id/statystyki" element={<MatchStatsPage />} />
             </Routes>
           </Layout>
         </ProtectedRoute>

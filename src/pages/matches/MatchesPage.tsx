@@ -85,6 +85,16 @@ const MatchesPage: React.FC = () => {
                 <div className="text-red-400 text-sm">▶ YT</div>
               )}
 
+              {/* Stats link */}
+              {(match.status === 'w_trakcie' || match.status === 'zakończony') && (
+                <Link
+                  to={`/mecze/${match.id}/statystyki`}
+                  onClick={e => e.stopPropagation()}
+                  className="text-xs text-primary-400 hover:text-primary-300 px-2 py-1 rounded bg-primary-900/30 hover:bg-primary-900/50 transition-colors shrink-0"
+                >
+                  📊 Statystyki
+                </Link>
+              )}
               {/* Status */}
               <span className={`text-xs px-3 py-1 rounded-full font-medium shrink-0 ${STATUS_COLORS[match.status]}`}>
                 {STATUS_LABELS[match.status]}

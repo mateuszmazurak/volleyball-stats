@@ -54,9 +54,9 @@ export const PlayersPage: React.FC = () => {
             </thead>
             <tbody>
               {players.map((p, i) => (
-                <tr key={p.id} className={`border-b border-gray-800 hover:bg-gray-800/30 ${i % 2 === 0 ? '' : 'bg-gray-900/30'}`}>
+                <tr key={p.id} className="border-b border-gray-800 hover:bg-gray-800/30">
                   <td className="px-5 py-3 text-gray-400 font-mono">{p.jersey_number}</td>
-                  <td className="px-5 py-3 text-white font-medium">{p.full_name}</td>
+                  <td className="px-5 py-3"><Link to={`/zawodnicy/${p.id}/statystyki`} className="text-white font-medium hover:text-primary-400">{p.full_name}</Link></td>
                   <td className="px-5 py-3 text-gray-300">{p.team?.name}</td>
                   <td className="px-5 py-3">
                     <span className={`text-xs px-2 py-1 rounded-full font-medium ${POSITION_COLORS[p.position]}`}>
