@@ -30,10 +30,43 @@ const MatchesPage: React.FC = () => {
   useEffect(() => { load() }, [])
 
   const handleDelete = async (match: any) => {
-    if (!window.confirm(`Usunąć mecz ${match.home_team?.name} vs ${match.away_team?.name}? Usunie też wszystkie zapisane akcje.`)) return
+    if (!window.confirm(`Usunąć mecz ${match.home_team?.name} vs ${match.away_team?.name}?\nUsunie też wszystkie akcje, sety i składy.`)) return
     setDeleting(match.id)
-    await supabase.from('matches').delete().eq('id', match.id)
-    setMatches(prev => prev.filter(m => m.id !== match.id))
+
+    try {
+      // 1. Pobierz ID setów
+      const { data: sets } = await supabase.from('sets').select('id').eq('match_id', match.id)
+      const setIds = (sets || []).map((s: any) => s.id)
+
+      // 2. Usuń akcje ze wszystkich setów
+      if (setIds.length > 0) {
+        await supabase.from('actions').delete().in('set_id', setIds)
+      }
+
+      // 3. Usuń sety
+      await supabase.from('sets').delete().eq('match_id', match.id)
+
+      // 4. Usuń składy
+      await supabase.from('match_lineups').delete().eq('match_id', match.id)
+
+      // 5. Usuń zmiany zawodników (jeśli tabela istnieje)
+      try {
+        await supabase.from('substitutions').delete().eq('match_id', match.id)
+      } catch {}
+
+      // 6. Usuń mecz
+      const { error } = await supabase.from('matches').delete().eq('id', match.id)
+
+      if (error) {
+        alert('Błąd usuwania: ' + error.message)
+        setDeleting(null)
+        return
+      }
+
+      setMatches(prev => prev.filter(m => m.id !== match.id))
+    } catch (err: any) {
+      alert('Błąd: ' + err.message)
+    }
     setDeleting(null)
   }
 

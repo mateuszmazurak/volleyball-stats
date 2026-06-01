@@ -1,25 +1,102 @@
 import { useMemo } from 'react'
 import { Action, ActionType } from 'types/database'
 
-export interface ActionStat {
-  total: number
-  perfect: number   // #
-  positive: number  // +
-  overpass: number  // !
-  negative: number  // -
-  error: number     // /
-  point: number     // *
-  pct: number       // (perfect + positive) / total * 100
-  errorPct: number  // error / total * 100
+/**
+ * Statystyki wzorowane na DataVolley / AVCA / SoloStats
+ *
+ * ATAK (A, K):
+ *   Kill (K)     = akcja zakończona punktem (*)
+ *   Error (E)    = błąd (/)
+ *   Att          = łączna liczba prób
+ *   HitEff       = (Kill - Error) / Att  — główny wskaźnik ataku wg AVCA
+ *   Kill%        = Kill / Att * 100
+ *
+ * SERWIS (S):
+ *   Ace (#, *)   = as serwisowy
+ *   Error (/)    = błąd serwisu
+ *   Att          = łączna liczba serwisów
+ *   Eff%         = (Ace - Error) / Att * 100
+ *
+ * PRZYJĘCIE (R):
+ *   Perfect (#)  = perfekcyjne — setter wystawia ze wszystkich opcji
+ *   Positive (+) = pozytywne — setter wystawia w ograniczeniu
+ *   Overpass (!) = overpass / trudne
+ *   Negative (-) = negatywne — brak możliwości ataku
+ *   Error (/)    = błąd przyjęcia (punkt przeciwnika)
+ *   Exc%         = Perfect / Att * 100
+ *   Pos%         = (Perfect + Positive) / Att * 100
+ *   Avg          = (3×Perfect + 2×Positive + 1×Overpass + 0×Error) / Att  (skala 0-3)
+ *
+ * BLOK (B):
+ *   Solo (*)     = blok punktowy
+ *   Assist (+)   = blok zatrzymujący (kontynuacja gry)
+ *   Error (/)    = błąd bloku
+ *
+ * OBRONA (D):
+ *   Dig+         = # lub + (skuteczna obrona)
+ *   Error        = /
+ *   Dig%         = Dig+ / Att * 100
+ */
+
+export interface AttackStat {
+  att: number      // łączna liczba ataków
+  kill: number     // punkty (*)
+  error: number    // błędy (/)
+  hitEff: number   // (kill-error)/att — AVCA Hitting Efficiency
+  killPct: number  // kill/att*100
+  errorPct: number
 }
 
-export interface PlayerStat {
+export interface ServeStat {
+  att: number
+  ace: number      // as (#, *)
+  error: number    // błąd (/)
+  positive: number // + (negatywny dla przyjmujących ale nie punkt)
+  effPct: number   // (ace-error)/att*100
+  acePct: number
+  errorPct: number
+}
+
+export interface ReceptionStat {
+  att: number
+  perfect: number  // #
+  positive: number // +
+  overpass: number // !
+  negative: number // -
+  error: number    // /
+  excPct: number   // perfect/att*100
+  posPct: number   // (perfect+positive)/att*100
+  avg: number      // average 0-3
+}
+
+export interface BlockStat {
+  att: number
+  solo: number     // * (punkt)
+  assist: number   // + (zatrzymanie)
+  error: number    // /
+  totalPts: number // solo + assist*0.5 (wg DataVolley)
+}
+
+export interface DigStat {
+  att: number
+  good: number     // # lub +
+  error: number    // /
+  digPct: number
+}
+
+export interface PlayerFullStat {
   player_id: string
   player_name: string
   jersey_number: number
   position: string
-  byType: Partial<Record<ActionType, ActionStat>>
-  total: number
+  attack?: AttackStat
+  serve?: ServeStat
+  reception?: ReceptionStat
+  block?: BlockStat
+  dig?: DigStat
+  totalActions: number
+  // Punkty zdobyte bezpośrednio
+  directPoints: number // ace + kill + block solo
 }
 
 export interface ZoneStat {
@@ -28,82 +105,133 @@ export interface ZoneStat {
   pct: number
 }
 
-const emptyActionStat = (): ActionStat => ({
-  total: 0, perfect: 0, positive: 0, overpass: 0,
-  negative: 0, error: 0, point: 0, pct: 0, errorPct: 0
-})
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
-function buildActionStat(actions: Action[]): ActionStat {
-  const s = emptyActionStat()
-  s.total = actions.length
-  actions.forEach(a => {
-    if (a.quality === '#') s.perfect++
-    else if (a.quality === '+') s.positive++
-    else if (a.quality === '!') s.overpass++
-    else if (a.quality === '-') s.negative++
-    else if (a.quality === '/') s.error++
-    else if (a.quality === '*') s.point++
-  })
-  s.pct = s.total > 0 ? Math.round(((s.perfect + s.positive) / s.total) * 100) : 0
-  s.errorPct = s.total > 0 ? Math.round((s.error / s.total) * 100) : 0
-  return s
+function calcAttack(actions: Action[]): AttackStat | undefined {
+  if (actions.length === 0) return undefined
+  const att = actions.length
+  const kill = actions.filter(a => a.quality === '*').length
+  const error = actions.filter(a => a.quality === '/').length
+  return {
+    att, kill, error,
+    hitEff: att > 0 ? Math.round(((kill - error) / att) * 1000) / 1000 : 0,
+    killPct: att > 0 ? Math.round((kill / att) * 100) : 0,
+    errorPct: att > 0 ? Math.round((error / att) * 100) : 0,
+  }
 }
+
+function calcServe(actions: Action[]): ServeStat | undefined {
+  if (actions.length === 0) return undefined
+  const att = actions.length
+  const ace = actions.filter(a => a.quality === '#' || a.quality === '*').length
+  const error = actions.filter(a => a.quality === '/').length
+  const positive = actions.filter(a => a.quality === '+').length
+  return {
+    att, ace, error, positive,
+    effPct: att > 0 ? Math.round(((ace - error) / att) * 100) : 0,
+    acePct: att > 0 ? Math.round((ace / att) * 100) : 0,
+    errorPct: att > 0 ? Math.round((error / att) * 100) : 0,
+  }
+}
+
+function calcReception(actions: Action[]): ReceptionStat | undefined {
+  if (actions.length === 0) return undefined
+  const att = actions.length
+  const perfect = actions.filter(a => a.quality === '#').length
+  const positive = actions.filter(a => a.quality === '+').length
+  const overpass = actions.filter(a => a.quality === '!').length
+  const negative = actions.filter(a => a.quality === '-').length
+  const error = actions.filter(a => a.quality === '/').length
+  const avg = att > 0
+    ? Math.round(((perfect * 3 + positive * 2 + overpass * 1) / att) * 100) / 100
+    : 0
+  return {
+    att, perfect, positive, overpass, negative, error,
+    excPct: att > 0 ? Math.round((perfect / att) * 100) : 0,
+    posPct: att > 0 ? Math.round(((perfect + positive) / att) * 100) : 0,
+    avg,
+  }
+}
+
+function calcBlock(actions: Action[]): BlockStat | undefined {
+  if (actions.length === 0) return undefined
+  const att = actions.length
+  const solo = actions.filter(a => a.quality === '*').length
+  const assist = actions.filter(a => a.quality === '+').length
+  const error = actions.filter(a => a.quality === '/').length
+  return { att, solo, assist, error, totalPts: solo + assist * 0.5 }
+}
+
+function calcDig(actions: Action[]): DigStat | undefined {
+  if (actions.length === 0) return undefined
+  const att = actions.length
+  const good = actions.filter(a => a.quality === '#' || a.quality === '+').length
+  const error = actions.filter(a => a.quality === '/').length
+  return { att, good, error, digPct: att > 0 ? Math.round((good / att) * 100) : 0 }
+}
+
+// ─── Main hook ───────────────────────────────────────────────────────────────
 
 export function useMatchStats(actions: Action[]) {
   return useMemo(() => {
-    // Per player stats
+    // Per-player
     const playerMap: Record<string, { actions: Action[]; info: any }> = {}
     actions.forEach(a => {
       if (!a.player_id) return
-      if (!playerMap[a.player_id]) {
-        playerMap[a.player_id] = { actions: [], info: (a as any).player }
-      }
+      if (!playerMap[a.player_id]) playerMap[a.player_id] = { actions: [], info: (a as any).player }
       playerMap[a.player_id].actions.push(a)
     })
 
-    const playerStats: PlayerStat[] = Object.entries(playerMap).map(([pid, { actions: pActions, info }]) => {
-      const types: ActionType[] = ['S', 'R', 'E', 'A', 'B', 'D', 'K', 'F']
-      const byType: Partial<Record<ActionType, ActionStat>> = {}
-      types.forEach(t => {
-        const filtered = pActions.filter(a => a.action_type === t)
-        if (filtered.length > 0) byType[t] = buildActionStat(filtered)
-      })
+    const playerStats: PlayerFullStat[] = Object.entries(playerMap).map(([pid, { actions: pa, info }]) => {
+      const byType = (t: ActionType) => pa.filter(a => a.action_type === t)
+      const attackActions = [...byType('A'), ...byType('K')]
+      const directPoints =
+        pa.filter(a => (a.action_type === 'S') && (a.quality === '#' || a.quality === '*')).length +
+        pa.filter(a => (a.action_type === 'A' || a.action_type === 'K') && a.quality === '*').length +
+        pa.filter(a => a.action_type === 'B' && a.quality === '*').length
       return {
         player_id: pid,
         player_name: info?.full_name || 'Nieznany',
         jersey_number: info?.jersey_number || 0,
         position: info?.position || '',
-        byType,
-        total: pActions.length,
+        attack: calcAttack(attackActions),
+        serve: calcServe(byType('S')),
+        reception: calcReception(byType('R')),
+        block: calcBlock(byType('B')),
+        dig: calcDig(byType('D')),
+        totalActions: pa.length,
+        directPoints,
       }
     }).sort((a, b) => a.jersey_number - b.jersey_number)
 
-    // Team overall stats per action type
-    const types: ActionType[] = ['S', 'R', 'E', 'A', 'B', 'D', 'K', 'F']
-    const teamStats: Partial<Record<ActionType, ActionStat>> = {}
-    types.forEach(t => {
-      const filtered = actions.filter(a => a.action_type === t)
-      if (filtered.length > 0) teamStats[t] = buildActionStat(filtered)
-    })
+    // Team totals
+    const allAttack = actions.filter(a => a.action_type === 'A' || a.action_type === 'K')
+    const teamStats = {
+      attack: calcAttack(allAttack),
+      serve: calcServe(actions.filter(a => a.action_type === 'S')),
+      reception: calcReception(actions.filter(a => a.action_type === 'R')),
+      block: calcBlock(actions.filter(a => a.action_type === 'B')),
+      dig: calcDig(actions.filter(a => a.action_type === 'D')),
+    }
 
-    // Zone stats (attacks and serves)
-    const zoneAttacks: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 }
-    const zoneServes: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 }
-    actions.filter(a => a.action_type === 'A' && a.zone_from).forEach(a => { zoneAttacks[a.zone_from!]++ })
-    actions.filter(a => a.action_type === 'S' && a.zone_from).forEach(a => { zoneServes[a.zone_from!]++ })
+    // Zone heatmaps
+    const zoneCount = (type: ActionType, field: 'zone_from' | 'zone_to') => {
+      const counts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 }
+      actions.filter(a => a.action_type === type && a[field]).forEach(a => { counts[a[field]!]++ })
+      const total = Object.values(counts).reduce((s, v) => s + v, 0)
+      return Object.entries(counts).map(([z, count]) => ({
+        zone: parseInt(z), count,
+        pct: total > 0 ? Math.round((count / total) * 100) : 0
+      }))
+    }
 
-    const totalAttacks = Object.values(zoneAttacks).reduce((s, v) => s + v, 0)
-    const totalServes = Object.values(zoneServes).reduce((s, v) => s + v, 0)
-
-    const attackZones: ZoneStat[] = Object.entries(zoneAttacks).map(([z, count]) => ({
-      zone: parseInt(z), count,
-      pct: totalAttacks > 0 ? Math.round((count / totalAttacks) * 100) : 0
-    }))
-    const serveZones: ZoneStat[] = Object.entries(zoneServes).map(([z, count]) => ({
-      zone: parseInt(z), count,
-      pct: totalServes > 0 ? Math.round((count / totalServes) * 100) : 0
-    }))
-
-    return { playerStats, teamStats, attackZones, serveZones, totalActions: actions.length }
+    return {
+      playerStats,
+      teamStats,
+      attackZonesFrom: zoneCount('A', 'zone_from'),
+      attackZonesTo: zoneCount('A', 'zone_to'),
+      serveZonesTo: zoneCount('S', 'zone_to'),
+      totalActions: actions.length,
+    }
   }, [actions])
 }
