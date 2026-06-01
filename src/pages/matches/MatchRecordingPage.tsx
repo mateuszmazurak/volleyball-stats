@@ -73,6 +73,12 @@ const MatchRecordingPage: React.FC = () => {
   const inputRef = useRef<HTMLInputElement>(null)
   const [ytReady, setYtReady] = useState(false)
 
+  // Read serving team set in MatchDetailPage
+  useEffect(() => {
+    const saved = sessionStorage.getItem(`match_${id}_serving`)
+    if (saved === 'home' || saved === 'away') setServingTeam(saved)
+  }, [id])
+
   // Load all data
   useEffect(() => {
     const load = async () => {
@@ -360,13 +366,43 @@ const MatchRecordingPage: React.FC = () => {
           <div className="text-right">
             <div className="text-xs text-blue-400 font-medium">{match.home_team?.short_name}</div>
           </div>
-          <button onClick={() => handlePoint('home')} className="w-10 h-10 rounded-lg bg-gray-800 hover:bg-blue-900 border border-gray-600 hover:border-blue-500 text-white font-bold text-xl transition-colors">
-            {scoreHome}
-          </button>
+          {/* Home score */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setScoreHome(s => Math.max(0, s - 1))}
+              className="w-6 h-6 rounded bg-gray-800 hover:bg-red-900 border border-gray-700 text-gray-400 hover:text-red-300 text-xs font-bold transition-colors"
+              title="Odejmij punkt"
+            >−</button>
+            <button
+              onClick={() => handlePoint('home')}
+              className="w-10 h-10 rounded-lg bg-gray-800 hover:bg-blue-900 border border-gray-600 hover:border-blue-500 text-white font-bold text-xl transition-colors"
+              title="Dodaj punkt gospodarzom"
+            >{scoreHome}</button>
+            <button
+              onClick={() => handlePoint('home')}
+              className="w-6 h-6 rounded bg-gray-800 hover:bg-blue-900 border border-gray-700 text-gray-400 hover:text-blue-300 text-xs font-bold transition-colors"
+              title="Dodaj punkt"
+            >+</button>
+          </div>
           <div className="text-gray-600 font-bold">:</div>
-          <button onClick={() => handlePoint('away')} className="w-10 h-10 rounded-lg bg-gray-800 hover:bg-orange-900 border border-gray-600 hover:border-orange-500 text-white font-bold text-xl transition-colors">
-            {scoreAway}
-          </button>
+          {/* Away score */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setScoreAway(s => Math.max(0, s - 1))}
+              className="w-6 h-6 rounded bg-gray-800 hover:bg-red-900 border border-gray-700 text-gray-400 hover:text-red-300 text-xs font-bold transition-colors"
+              title="Odejmij punkt"
+            >−</button>
+            <button
+              onClick={() => handlePoint('away')}
+              className="w-10 h-10 rounded-lg bg-gray-800 hover:bg-orange-900 border border-gray-600 hover:border-orange-500 text-white font-bold text-xl transition-colors"
+              title="Dodaj punkt gościom"
+            >{scoreAway}</button>
+            <button
+              onClick={() => handlePoint('away')}
+              className="w-6 h-6 rounded bg-gray-800 hover:bg-orange-900 border border-gray-700 text-gray-400 hover:text-orange-300 text-xs font-bold transition-colors"
+              title="Dodaj punkt"
+            >+</button>
+          </div>
           <div className="text-left">
             <div className="text-xs text-orange-400 font-medium">{match.away_team?.short_name}</div>
           </div>
@@ -399,9 +435,8 @@ const MatchRecordingPage: React.FC = () => {
             onClick={() => setShowSetEndModal(true)}
             className="text-xs bg-gray-800 hover:bg-red-900 text-gray-300 hover:text-red-300 px-2 py-1 rounded transition-colors"
           >Koniec seta</button>
-          <Link to={`/mecze/${id}/statystyki`} className="text-xs text-primary-400 hover:text-primary-300">
-            📊 Statystyki
-          </Link>
+          <Link to={`/mecze/${id}/statystyki`} className="text-xs text-primary-400 hover:text-primary-300">📊 Statystyki</Link>
+          <Link to="/pomoc" target="_blank" className="text-xs text-gray-500 hover:text-gray-300">📖 Pomoc</Link>
         </div>
       </div>
 

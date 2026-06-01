@@ -8,15 +8,18 @@ const navItems = {
     { path: '/mecze', label: 'Mecze', icon: '🏐' },
     { path: '/druzyny', label: 'Drużyny', icon: '👥' },
     { path: '/zawodnicy', label: 'Zawodnicy', icon: '🏃' },
+    { path: '/pomoc', label: 'Instrukcja', icon: '📖' },
   ],
   trener: [
     { path: '/dashboard', label: 'Dashboard', icon: '📊' },
     { path: '/mecze', label: 'Mecze', icon: '🏐' },
     { path: '/statystyki', label: 'Statystyki', icon: '📈' },
+    { path: '/pomoc', label: 'Instrukcja', icon: '📖' },
   ],
   zawodnik: [
     { path: '/dashboard', label: 'Dashboard', icon: '📊' },
     { path: '/moje-statystyki', label: 'Moje statystyki', icon: '📈' },
+    { path: '/pomoc', label: 'Instrukcja', icon: '📖' },
   ],
 }
 

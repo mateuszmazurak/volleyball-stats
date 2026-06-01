@@ -1,15 +1,11 @@
 import React, { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from 'lib/supabase'
-import { Match } from '../../types/database'
 import { useAuth } from 'hooks/useAuth'
 
 const STATUS_LABELS: Record<string, string> = {
-  zaplanowany: 'Zaplanowany',
-  w_trakcie: 'W trakcie',
-  zakończony: 'Zakończony',
+  zaplanowany: 'Zaplanowany', w_trakcie: 'W trakcie', zakończony: 'Zakończony',
 }
-
 const STATUS_COLORS: Record<string, string> = {
   zaplanowany: 'bg-gray-700 text-gray-300',
   w_trakcie: 'bg-green-900 text-green-300',
@@ -19,18 +15,27 @@ const STATUS_COLORS: Record<string, string> = {
 const MatchesPage: React.FC = () => {
   const [matches, setMatches] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [deleting, setDeleting] = useState<string | null>(null)
   const { profile } = useAuth()
 
-  useEffect(() => {
-    supabase
+  const load = async () => {
+    const { data } = await supabase
       .from('matches')
       .select('*, home_team:teams!matches_home_team_id_fkey(name,short_name), away_team:teams!matches_away_team_id_fkey(name,short_name)')
       .order('match_date', { ascending: false })
-      .then(({ data }) => {
-        setMatches(data || [])
-        setLoading(false)
-      })
-  }, [])
+    setMatches(data || [])
+    setLoading(false)
+  }
+
+  useEffect(() => { load() }, [])
+
+  const handleDelete = async (match: any) => {
+    if (!window.confirm(`Usunąć mecz ${match.home_team?.name} vs ${match.away_team?.name}? Usunie też wszystkie zapisane akcje.`)) return
+    setDeleting(match.id)
+    await supabase.from('matches').delete().eq('id', match.id)
+    setMatches(prev => prev.filter(m => m.id !== match.id))
+    setDeleting(null)
+  }
 
   return (
     <div className="p-6">
@@ -46,20 +51,17 @@ const MatchesPage: React.FC = () => {
       ) : matches.length === 0 ? (
         <div className="card text-center py-12">
           <div className="text-4xl mb-3">🏐</div>
-          <div className="text-gray-400">Brak meczów. Utwórz pierwszy!</div>
+          <div className="text-gray-400 mb-4">Brak meczów.</div>
+          {profile?.role === 'statystyk' && (
+            <Link to="/mecze/nowy" className="btn-primary inline-block">Utwórz mecz</Link>
+          )}
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-2">
           {matches.map(match => (
-            <Link
-              key={match.id}
-              to={match.status === 'w_trakcie' || match.status === 'zakończony'
-                ? `/mecze/${match.id}/rejestracja`
-                : `/mecze/${match.id}`}
-              className="card hover:border-gray-500 transition-colors flex items-center gap-4 py-4"
-            >
+            <div key={match.id} className="card hover:border-gray-600 transition-colors flex items-center gap-3 py-3">
               {/* Data */}
-              <div className="text-center w-14 shrink-0">
+              <div className="text-center w-12 shrink-0">
                 <div className="text-xs text-gray-500">
                   {new Date(match.match_date).toLocaleDateString('pl-PL', { day: '2-digit', month: 'short' })}
                 </div>
@@ -69,37 +71,52 @@ const MatchesPage: React.FC = () => {
               </div>
 
               {/* Teams */}
-              <div className="flex-1 flex items-center gap-3">
-                <span className="font-semibold text-white">{match.home_team?.name}</span>
-                <span className="text-gray-500 text-sm font-mono">vs</span>
-                <span className="font-semibold text-white">{match.away_team?.name}</span>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-white truncate">
+                  {match.home_team?.name} <span className="text-gray-500 font-normal text-sm">vs</span> {match.away_team?.name}
+                </div>
+                {match.location && (
+                  <div className="text-gray-500 text-xs mt-0.5">📍 {match.location}</div>
+                )}
               </div>
 
-              {/* Location */}
-              {match.location && (
-                <div className="text-gray-500 text-sm hidden sm:block">📍 {match.location}</div>
-              )}
+              {/* YouTube */}
+              {match.youtube_url && <span className="text-red-400 text-xs shrink-0">▶ YT</span>}
 
-              {/* YouTube indicator */}
-              {match.youtube_url && (
-                <div className="text-red-400 text-sm">▶ YT</div>
-              )}
-
-              {/* Stats link */}
-              {(match.status === 'w_trakcie' || match.status === 'zakończony') && (
-                <Link
-                  to={`/mecze/${match.id}/statystyki`}
-                  onClick={e => e.stopPropagation()}
-                  className="text-xs text-primary-400 hover:text-primary-300 px-2 py-1 rounded bg-primary-900/30 hover:bg-primary-900/50 transition-colors shrink-0"
-                >
-                  📊 Statystyki
-                </Link>
-              )}
               {/* Status */}
-              <span className={`text-xs px-3 py-1 rounded-full font-medium shrink-0 ${STATUS_COLORS[match.status]}`}>
+              <span className={`text-xs px-2 py-1 rounded-full font-medium shrink-0 ${STATUS_COLORS[match.status]}`}>
                 {STATUS_LABELS[match.status]}
               </span>
-            </Link>
+
+              {/* Actions */}
+              <div className="flex gap-1 shrink-0">
+                {(match.status === 'w_trakcie' || match.status === 'zaplanowany') && profile?.role === 'statystyk' && (
+                  <Link to={match.status === 'w_trakcie' ? `/mecze/${match.id}/rejestracja` : `/mecze/${match.id}`}
+                    className="text-xs bg-primary-700 hover:bg-primary-600 text-white px-2 py-1 rounded transition-colors">
+                    {match.status === 'w_trakcie' ? '▶ Rejestruj' : '⚙️ Skład'}
+                  </Link>
+                )}
+                {(match.status === 'w_trakcie' || match.status === 'zakończony') && (
+                  <Link to={`/mecze/${match.id}/statystyki`}
+                    className="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition-colors">
+                    📊
+                  </Link>
+                )}
+                {profile?.role === 'statystyk' && (
+                  <>
+                    <Link to={`/mecze/${match.id}/edytuj`}
+                      className="text-gray-600 hover:text-white px-2 py-1 rounded hover:bg-gray-700 text-xs transition-colors">
+                      ✏️
+                    </Link>
+                    <button
+                      onClick={() => handleDelete(match)}
+                      disabled={deleting === match.id}
+                      className="text-gray-600 hover:text-red-400 px-2 py-1 rounded hover:bg-gray-700 text-xs transition-colors"
+                    >{deleting === match.id ? '...' : '🗑️'}</button>
+                  </>
+                )}
+              </div>
+            </div>
           ))}
         </div>
       )}
