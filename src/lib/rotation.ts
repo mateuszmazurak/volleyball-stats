@@ -24,9 +24,27 @@ export interface RotationState {
   rotationCount: number    // ile rotacji od startu
 }
 
-// Następna pozycja po rotacji (zgodnie z ruchem wskazówek)
-const NEXT_POSITION: Record<number, number> = {
-  1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 1
+/**
+ * Mapa rotacji wg FIVB - dokąd idzie zawodnik z danej pozycji:
+ *
+ *   4 | 3 | 2   (przód - siatka)
+ *   5 | 6 | 1   (tył - linia końcowa)
+ *
+ * Rotacja zgodna z ruchem wskazówek zegara (patrząc z góry na boisko):
+ *   Z1 (prawy tył, serwujący) → Z6 (środek tył)
+ *   Z2 (prawy przód)         → Z1 (prawy tył - nowy serwujący!)
+ *   Z3 (środek przód)        → Z2
+ *   Z4 (lewy przód)          → Z3
+ *   Z5 (lewy tył)            → Z4
+ *   Z6 (środek tył)          → Z5
+ */
+const ROTATE_TO: Record<number, number> = {
+  1: 6,
+  2: 1,
+  3: 2,
+  4: 3,
+  5: 4,
+  6: 5,
 }
 
 /**
@@ -35,7 +53,7 @@ const NEXT_POSITION: Record<number, number> = {
 export function rotate(lineup: CourtLineup): CourtLineup {
   const next: CourtLineup = {}
   for (let pos = 1; pos <= 6; pos++) {
-    next[NEXT_POSITION[pos]] = lineup[pos] ?? null
+    next[ROTATE_TO[pos]] = lineup[pos] ?? null
   }
   return next
 }

@@ -60,12 +60,19 @@ export function parseAction(raw: string): ParsedAction {
     rawCode: raw.trim()
   }
 
-  // Wyciągamy numer zawodnika (1-2 cyfry na początku)
-  const numMatch = code.match(/^(\d{1,2})/)
+  // Wyciągamy numer zawodnika z opcjonalnym prefixem drużyny
+  // Standard DataVolley/VolleyStation:
+  //   *11S  lub  11S  = gospodarz #11 (gwiazdka opcjonalna, domyślnie gospodarz)
+  //    a11S          = gość #11 (prefiks 'a' wymagany dla gościa)
+  const numMatch = code.match(/^[*A]?(\d{1,2})/)
   if (!numMatch) return { ...result, error: `Brak numeru zawodnika: "${raw}"` }
   result.playerNumber = parseInt(numMatch[1])
 
-  let rest = code.slice(numMatch[1].length)
+  // Określ drużynę na podstawie prefiksu
+  const prefix = code[0]
+  ;(result as any).teamPrefix = prefix === 'A' ? 'away' : 'home' // brak lub * = home
+
+  let rest = code.slice(numMatch[0].length)
 
   // Typ akcji (jedna litera)
   const typeChar = rest[0]
@@ -102,9 +109,11 @@ export function parseAction(raw: string): ParsedAction {
 
   // Przypisz strefy zależnie od kontekstu
   if (result.actionType === 'S') {
-    // Serwis: strefa wykonania (1,2,6 = strefa za linią końcową)
-    if (zonesSeen.length >= 1) result.zoneFrom = zonesSeen[0]
-    if (zonesSeen.length >= 2) result.zoneTo = zonesSeen[1]
+    // Serwis:
+    // - 1 cyfra: strefa docelowa na boisku przeciwnika (np. 8S6F = serwis w strefę 6)
+    // - 2 cyfry: pierwsza = strefa wyjścia, druga = strefa docelowa (np. 8S16F = z 1 w 6)
+    if (zonesSeen.length === 1) result.zoneTo = zonesSeen[0]
+    else if (zonesSeen.length >= 2) { result.zoneFrom = zonesSeen[0]; result.zoneTo = zonesSeen[1] }
   } else if (result.actionType === 'R' || result.actionType === 'D' || result.actionType === 'F') {
     // Przyjęcie/obrona: strefa z której przyjmujemy
     if (zonesSeen.length >= 1) result.zoneFrom = zonesSeen[0]
@@ -112,9 +121,11 @@ export function parseAction(raw: string): ParsedAction {
     // Rozegranie: strefa do której wystawiamy
     if (zonesSeen.length >= 1) result.zoneTo = zonesSeen[0]
   } else if (result.actionType === 'A' || result.actionType === 'K') {
-    // Atak/kiwka: strefa atakującego + strefa celu
-    if (zonesSeen.length >= 1) result.zoneFrom = zonesSeen[0]
-    if (zonesSeen.length >= 2) result.zoneTo = zonesSeen[1]
+    // Atak/kiwka:
+    // - 1 cyfra: strefa DOCELOWA na boisku przeciwnika (np. 7A5H+ = atak W strefę 5)
+    // - 2 cyfry: pierwsza = skąd atakuje, druga = gdzie trafia (np. 7A45H+ = ze strefy 4 w strefę 5)
+    if (zonesSeen.length === 1) result.zoneTo = zonesSeen[0]
+    else if (zonesSeen.length >= 2) { result.zoneFrom = zonesSeen[0]; result.zoneTo = zonesSeen[1] }
   } else if (result.actionType === 'B') {
     // Blok: strefa bloku
     if (zonesSeen.length >= 1) result.zoneFrom = zonesSeen[0]
@@ -131,7 +142,10 @@ export function parseRally(raw: string): ParsedRally {
   if (!raw.trim()) return { actions: [], rawCode: raw }
 
   // Dzielenie po "/" lub po spacji między akcjami
-  const parts = raw.split(/\s*\/\s*|\s+(?=\d)/).filter(p => p.trim())
+  // Dziel przed: cyfrą, prefiksem 'a' (gość) lub '*' (gospodarz)
+  // Separator: '/' otoczone spacjami LUB spacja przed cyfrą/prefiksem
+  // '/' bez spacji = jakość błędu, nie separator!
+  const parts = raw.split(/\s+\/\s+|\s+(?=[\d*])|\s+(?=[aA]\d)/).filter(p => p.trim())
   const actions: ParsedAction[] = []
   const errors: string[] = []
 
@@ -154,12 +168,19 @@ export function parseRally(raw: string): ParsedRally {
 export function describeAction(action: ParsedAction): string {
   if (action.error) return `⚠️ ${action.error}`
 
-  const parts: string[] = [`#${action.playerNumber}`]
+  const teamLabel = (action as any).teamPrefix === 'away' ? '[Gość]' : '[Gosp]'
+  const parts: string[] = [`${teamLabel} #${action.playerNumber}`]
   parts.push(ACTION_LABELS[action.actionType] || action.actionType)
 
-  if (action.zoneFrom) parts.push(`ze strefy ${action.zoneFrom}`)
-  if (action.technique) parts.push(TECHNIQUE_LABELS[action.technique] || action.technique)
-  if (action.zoneTo) parts.push(`→ strefa ${action.zoneTo}`)
+  if (action.actionType === 'S') {
+    if (action.zoneFrom) parts.push(`ze strefy ${action.zoneFrom}`)
+    if (action.technique) parts.push(TECHNIQUE_LABELS[action.technique] || action.technique)
+    if (action.zoneTo) parts.push(`w strefę ${action.zoneTo}`)
+  } else {
+    if (action.zoneFrom) parts.push(`ze strefy ${action.zoneFrom}`)
+    if (action.technique) parts.push(TECHNIQUE_LABELS[action.technique] || action.technique)
+    if (action.zoneTo) parts.push(`→ strefa ${action.zoneTo}`)
+  }
   if (action.quality) parts.push(`[${QUALITY_LABELS[action.quality] || action.quality}]`)
 
   return parts.join(' ')

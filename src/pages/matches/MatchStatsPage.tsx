@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { supabase } from 'lib/supabase'
 import { Action } from 'types/database'
@@ -70,10 +70,16 @@ const ZoneMap: React.FC<{ zones: { zone: number; count: number; pct: number }[];
 
 // ─── Team summary cards ──────────────────────────────────────────────────────
 
-const TeamSummary: React.FC<{ teamStats: ReturnType<typeof useMatchStats>['teamStats'] }> = ({ teamStats }) => {
+const TeamSummary: React.FC<{
+  teamStats: ReturnType<typeof useMatchStats>['teamStats']
+  label?: string
+  color?: string
+}> = ({ teamStats, label, color = 'text-white' }) => {
   const { attack, serve, reception, block, dig } = teamStats
 
   return (
+    <div>
+    {label && <div className={`text-sm font-semibold mb-3 ${color}`}>{label}</div>}
     <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
       {/* ATAK */}
       {attack && (
@@ -164,6 +170,7 @@ const TeamSummary: React.FC<{ teamStats: ReturnType<typeof useMatchStats>['teamS
           </div>
         </div>
       )}
+    </div>
     </div>
   )
 }
@@ -279,7 +286,11 @@ const MatchStatsPage: React.FC = () => {
   const [selectedPlayer, setSelectedPlayer] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('druzyna')
   const [loading, setLoading] = useState(true)
-  const [ytStartTime, setYtStartTime] = useState(0)
+  const [playerTeamMap, setPlayerTeamMap] = useState<Record<string, 'home' | 'away'>>({})
+  const [ytCurrentTime, setYtCurrentTime] = useState<number | null>(null)
+  const iframeRef = useRef<HTMLIFrameElement>(null)
+
+  // Map: player_id -> team_side ('home'|'away')
 
   useEffect(() => {
     const load = async () => {
@@ -296,21 +307,29 @@ const MatchStatsPage: React.FC = () => {
         .in('set_id', (s || []).map((x: any) => x.id))
         .order('rally_index').order('action_index')
       setActions((a as any) || [])
+
+      // Load lineups to know which player belongs to which team
+      const { data: lineups } = await supabase
+        .from('match_lineups').select('player_id, team_side')
+        .eq('match_id', id!)
+      const map: Record<string, 'home' | 'away'> = {}
+      ;(lineups || []).forEach((l: any) => { map[l.player_id] = l.team_side })
+      setPlayerTeamMap(map)
+
       setLoading(false)
     }
     load()
   }, [id])
 
-  const filteredActions = selectedSet === 'all' ? actions : actions.filter(a => a.set_id === selectedSet)
-  const { playerStats, teamStats, attackZonesFrom, attackZonesTo, serveZonesTo } = useMatchStats(filteredActions)
 
-  const videoId = match?.youtube_url?.trim()
-    ? (match.youtube_url.match(/(?:v=|youtu\.be\/|embed\/)([A-Za-z0-9_-]{11})/)?.[1] ?? null)
-    : null
+  const filteredActions = selectedSet === 'all' ? actions : actions.filter(a => a.set_id === selectedSet)
+  const { playerStats, teamStats, homeStats, awayStats, home: homeZones, away: awayZones } = useMatchStats(filteredActions)
 
   const formatTime = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`
 
-  const seekTo = (t: number) => setYtStartTime(t)
+  const seekTo = (t: number) => {
+    setYtCurrentTime(t)
+  }
 
   const selectedPlayerData = playerStats.find(p => p.player_id === selectedPlayer)
   const playerActions = selectedPlayer ? filteredActions.filter(a => a.player_id === selectedPlayer && a.yt_start !== null) : []
@@ -355,19 +374,26 @@ const MatchStatsPage: React.FC = () => {
         <div className="text-gray-500 text-sm ml-2">{filteredActions.length} akcji</div>
       </div>
 
-      {/* YouTube (compact) */}
-      {videoId && (
-        <div className="mb-5 rounded-xl overflow-hidden" style={{ maxWidth: 560 }}>
-          <iframe
-            key={ytStartTime}
-            className="w-full aspect-video"
-            src={`https://www.youtube.com/embed/${videoId}?start=${ytStartTime}${ytStartTime > 0 ? '&autoplay=1' : ''}`}
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-            allowFullScreen
-            title="Match video"
-          />
-        </div>
-      )}
+      {/* YouTube iframe — bezpośredni embed, bez YouTube API */}
+      {match?.youtube_url && match.youtube_url.trim().length > 0 && (() => {
+        const videoId = match.youtube_url.match(/(?:v=|youtu\.be\/|embed\/)([A-Za-z0-9_-]{11})/)?.[1]
+        if (!videoId) return null
+        const startParam = ytCurrentTime !== null ? `&start=${Math.floor(ytCurrentTime)}&autoplay=1` : ''
+        const src = `https://www.youtube.com/embed/${videoId}?rel=0${startParam}`
+        return (
+          <div className="mb-5 rounded-xl overflow-hidden" style={{ maxWidth: 560 }}>
+            <iframe
+              ref={iframeRef}
+              key={ytCurrentTime ?? 'init'}
+              className="w-full aspect-video"
+              src={src}
+              title="YouTube"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+            />
+          </div>
+        )
+      })()}
 
       {/* Set filter */}
       <div className="flex gap-2 mb-5 flex-wrap">
@@ -396,9 +422,32 @@ const MatchStatsPage: React.FC = () => {
       {/* TAB: DRUŻYNA */}
       {tab === 'druzyna' && (
         <div>
-          <TeamSummary teamStats={teamStats} />
-          {filteredActions.length === 0 && (
-            <div className="text-center text-gray-500 py-12 mt-4">Brak zarejestrowanych akcji w wybranym zakresie</div>
+          {filteredActions.length === 0 ? (
+            <div className="text-center text-gray-500 py-12">Brak zarejestrowanych akcji w wybranym zakresie</div>
+          ) : (
+            <div className="space-y-8">
+              {/* Gospodarz */}
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-400 shrink-0"></span>
+                  <span className="text-blue-400 font-semibold">{match?.home_team?.name}</span>
+                  <span className="text-gray-500 text-xs">(Gospodarz)</span>
+                </div>
+                <TeamSummary teamStats={homeStats} />
+              </div>
+
+              <div className="border-t border-gray-800"></div>
+
+              {/* Gość */}
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="w-2.5 h-2.5 rounded-full bg-orange-400 shrink-0"></span>
+                  <span className="text-orange-400 font-semibold">{match?.away_team?.name}</span>
+                  <span className="text-gray-500 text-xs">(Gość)</span>
+                </div>
+                <TeamSummary teamStats={awayStats} />
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -406,25 +455,73 @@ const MatchStatsPage: React.FC = () => {
       {/* TAB: ZAWODNICY */}
       {tab === 'zawodnicy' && (
         <div>
-          <p className="text-gray-500 text-xs mb-3">Kliknij zawodnika aby zobaczyć jego klipy wideo ↓</p>
-          <PlayerTable players={playerStats} onSelect={setSelectedPlayer} selected={selectedPlayer} />
+          <p className="text-gray-500 text-xs mb-3">Kliknij zawodnika aby zobaczyć szczegóły i klipy wideo ↓</p>
 
-          {/* Player video clips */}
+          {/* HOME TEAM */}
+          {(() => {
+            const homePlayers = playerStats.filter(p => playerTeamMap[p.player_id] === 'home')
+            const awayPlayers = playerStats.filter(p => playerTeamMap[p.player_id] === 'away')
+            const unknownPlayers = playerStats.filter(p => !playerTeamMap[p.player_id])
+            return (
+              <>
+                {homePlayers.length > 0 && (
+                  <div className="mb-6">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="w-2 h-2 rounded-full bg-blue-400 shrink-0"></span>
+                      <span className="text-blue-400 font-semibold text-sm">{match?.home_team?.name}</span>
+                      <span className="text-gray-500 text-xs">(Gospodarz)</span>
+                    </div>
+                    <PlayerTable players={homePlayers} onSelect={setSelectedPlayer} selected={selectedPlayer} />
+                  </div>
+                )}
+                {awayPlayers.length > 0 && (
+                  <div className="mb-6">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="w-2 h-2 rounded-full bg-orange-400 shrink-0"></span>
+                      <span className="text-orange-400 font-semibold text-sm">{match?.away_team?.name}</span>
+                      <span className="text-gray-500 text-xs">(Gość)</span>
+                    </div>
+                    <PlayerTable players={awayPlayers} onSelect={setSelectedPlayer} selected={selectedPlayer} />
+                  </div>
+                )}
+                {unknownPlayers.length > 0 && (
+                  <div className="mb-6">
+                    <div className="text-gray-500 text-xs mb-2">Pozostali zawodnicy</div>
+                    <PlayerTable players={unknownPlayers} onSelect={setSelectedPlayer} selected={selectedPlayer} />
+                  </div>
+                )}
+              </>
+            )
+          })()}
+
+          {/* Player detail panel */}
           {selectedPlayerData && (
-            <div className="mt-6 card">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-full bg-primary-800 flex items-center justify-center font-bold text-white">
+            <div className="mt-2 card border-primary-700">
+              <div className="flex items-center gap-3 mb-3">
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white ${
+                  playerTeamMap[selectedPlayerData.player_id] === 'home' ? 'bg-blue-800' : 'bg-orange-800'
+                }`}>
                   {selectedPlayerData.jersey_number}
                 </div>
                 <div>
                   <div className="font-semibold text-white">{selectedPlayerData.player_name}</div>
-                  <div className="text-gray-400 text-sm">{playerActions.length} akcji z nagraniem</div>
+                  <div className="text-gray-400 text-xs">
+                    {playerTeamMap[selectedPlayerData.player_id] === 'home' ? match?.home_team?.name : match?.away_team?.name}
+                    {' · '}{playerActions.length} akcji z nagraniem
+                  </div>
                 </div>
-                <button onClick={() => setSelectedPlayer(null)} className="ml-auto text-gray-500 hover:text-white text-sm">✕ Zamknij</button>
+                <button onClick={() => setSelectedPlayer(null)} className="ml-auto text-gray-500 hover:text-white text-sm px-2 py-1 rounded hover:bg-gray-700">✕</button>
               </div>
 
-              {playerActions.length === 0 ? (
-                <div className="text-gray-500 text-sm">Brak akcji z timestampami YouTube dla tego zawodnika</div>
+              {!match?.youtube_url || match.youtube_url.trim().length === 0 ? (
+                <div className="text-yellow-600 text-sm bg-yellow-900/20 border border-yellow-800 rounded-lg px-3 py-2">
+                  ⚠️ Ten mecz nie ma przypisanego nagrania YouTube — timestampy nie są dostępne.
+                  <Link to={`/mecze/${id}/edytuj`} className="text-yellow-400 hover:text-yellow-300 ml-2 underline">Dodaj nagranie →</Link>
+                </div>
+              ) : playerActions.length === 0 ? (
+                <div className="text-gray-500 text-sm">
+                  Brak akcji z timestampami dla tego zawodnika w wybranym zakresie.
+                </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-64 overflow-y-auto">
                   {playerActions.map(a => (
@@ -449,38 +546,138 @@ const MatchStatsPage: React.FC = () => {
 
       {/* TAB: STREFY */}
       {tab === 'strefy' && (
-        <div className="flex gap-10 flex-wrap">
-          <ZoneMap zones={attackZonesFrom} title="Strefy ataków (skąd)" />
-          <ZoneMap zones={attackZonesTo} title="Strefy ataków (dokąd)" />
-          <ZoneMap zones={serveZonesTo} title="Strefy serwisów (dokąd)" />
+        <div className="space-y-8">
+          {/* Legenda */}
+          <div className="flex gap-4 text-xs flex-wrap">
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-blue-500 inline-block"></span>Duża gęstość</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-blue-900 inline-block opacity-40"></span>Mała gęstość</span>
+            <span className="text-gray-500">— każda strefa pokazuje liczbę akcji i procent z ogółu drużyny</span>
+          </div>
 
-          {/* Reception quality legend */}
-          {teamStats.reception && (
+          {/* Gospodarz */}
+          {homeZones && (
             <div>
-              <div className="text-sm font-medium text-gray-300 mb-3">Rozkład jakości przyjęć</div>
-              {[
-                { label: 'Perfekcyjne (#)', value: teamStats.reception.perfect, color: 'bg-blue-500', text: 'text-blue-400' },
-                { label: 'Pozytywne (+)', value: teamStats.reception.positive, color: 'bg-green-500', text: 'text-green-400' },
-                { label: 'Overpass (!)', value: teamStats.reception.overpass, color: 'bg-yellow-500', text: 'text-yellow-400' },
-                { label: 'Negatywne (-)', value: teamStats.reception.negative, color: 'bg-orange-500', text: 'text-orange-400' },
-                { label: 'Błąd (/)', value: teamStats.reception.error, color: 'bg-red-500', text: 'text-red-400' },
-              ].map(row => (
-                <div key={row.label} className="flex items-center gap-3 text-sm mb-1.5" style={{ minWidth: 220 }}>
-                  <div className="w-28 text-gray-400 text-xs">{row.label}</div>
-                  <div className="flex-1 bg-gray-800 rounded-full h-2">
-                    <div className={`h-2 rounded-full ${row.color}`}
-                      style={{ width: `${teamStats.reception!.att > 0 ? (row.value / teamStats.reception!.att) * 100 : 0}%` }} />
+              <div className="flex items-center gap-2 mb-4">
+                <span className="w-2.5 h-2.5 rounded-full bg-blue-400"></span>
+                <span className="text-blue-400 font-semibold">{match?.home_team?.name}</span>
+                <span className="text-gray-500 text-xs">(Gospodarz)</span>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                <div>
+                  <ZoneMap zones={homeZones.attackZonesTo} title="⚡ Ataki — dokąd" />
+                  <div className="mt-1 space-y-0.5 text-xs text-gray-500 max-w-[160px]">
+                    <div className="flex justify-between">
+                      <span className="text-emerald-400">Punkty</span>
+                      <span>{homeZones.attackZonesTo_kill.reduce((s,z) => s+z.count,0)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-red-400">Błędy</span>
+                      <span>{homeZones.attackZonesTo_err.reduce((s,z) => s+z.count,0)}</span>
+                    </div>
                   </div>
-                  <div className={`w-6 text-right text-xs font-mono font-semibold ${row.text}`}>{row.value}</div>
                 </div>
-              ))}
-              <div className="text-xs text-gray-500 mt-2">
-                Exc% <span className={pctColor(teamStats.reception.excPct, 40)}>{pct(teamStats.reception.excPct)}</span>
-                {' · '}Pos% <span className={pctColor(teamStats.reception.posPct, 60)}>{pct(teamStats.reception.posPct)}</span>
-                {' · '}Avg <span className="text-white">{avg(teamStats.reception.avg)}</span>
-                {' · '}Łącznie <span className="text-white">{teamStats.reception.att}</span>
+                <div>
+                  <ZoneMap zones={homeZones.serveZonesTo} title="🏐 Serwisy — dokąd" />
+                  <div className="mt-1 space-y-0.5 text-xs text-gray-500 max-w-[160px]">
+                    <div className="flex justify-between">
+                      <span className="text-emerald-400">Asy</span>
+                      <span>{homeZones.serveZonesTo_ace.reduce((s,z) => s+z.count,0)}</span>
+                    </div>
+                  </div>
+                </div>
+                {homeZones.reception && homeZones.reception.att > 0 && (
+                  <div style={{ minWidth: 200 }}>
+                    <div className="text-xs font-medium text-gray-300 mb-2">🤲 Jakość przyjęć</div>
+                    {[
+                      { label: 'Perfekcyjne (#)', value: homeZones.reception.perfect, color: 'bg-blue-500', text: 'text-blue-400' },
+                      { label: 'Pozytywne (+)', value: homeZones.reception.positive, color: 'bg-green-500', text: 'text-green-400' },
+                      { label: 'Overpass (!)', value: homeZones.reception.overpass, color: 'bg-yellow-500', text: 'text-yellow-400' },
+                      { label: 'Negatywne (-)', value: homeZones.reception.negative, color: 'bg-orange-500', text: 'text-orange-400' },
+                      { label: 'Błąd (/)', value: homeZones.reception.error, color: 'bg-red-500', text: 'text-red-400' },
+                    ].map(row => (
+                      <div key={row.label} className="flex items-center gap-2 mb-1">
+                        <div className="w-24 text-gray-400 text-xs shrink-0">{row.label}</div>
+                        <div className="flex-1 bg-gray-800 rounded-full h-1.5">
+                          <div className={`h-1.5 rounded-full ${row.color}`}
+                            style={{ width: `${homeZones.reception!.att > 0 ? (row.value / homeZones.reception!.att) * 100 : 0}%` }} />
+                        </div>
+                        <div className={`w-5 text-right text-xs font-mono ${row.text}`}>{row.value}</div>
+                      </div>
+                    ))}
+                    <div className="text-xs text-gray-500 mt-1.5">
+                      Pos% <span className={pctColor(homeZones.reception.posPct, 60)}>{pct(homeZones.reception.posPct)}</span>
+                      {' · '} Avg <span className="text-white">{avg(homeZones.reception.avg)}</span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
+          )}
+
+          <div className="border-t border-gray-800"></div>
+
+          {/* Gość */}
+          {awayZones && (
+            <div>
+              <div className="flex items-center gap-2 mb-4">
+                <span className="w-2.5 h-2.5 rounded-full bg-orange-400"></span>
+                <span className="text-orange-400 font-semibold">{match?.away_team?.name}</span>
+                <span className="text-gray-500 text-xs">(Gość)</span>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                <div>
+                  <ZoneMap zones={awayZones.attackZonesTo} title="⚡ Ataki — dokąd" />
+                  <div className="mt-1 space-y-0.5 text-xs text-gray-500 max-w-[160px]">
+                    <div className="flex justify-between">
+                      <span className="text-emerald-400">Punkty</span>
+                      <span>{awayZones.attackZonesTo_kill.reduce((s,z) => s+z.count,0)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-red-400">Błędy</span>
+                      <span>{awayZones.attackZonesTo_err.reduce((s,z) => s+z.count,0)}</span>
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <ZoneMap zones={awayZones.serveZonesTo} title="🏐 Serwisy — dokąd" />
+                  <div className="mt-1 space-y-0.5 text-xs text-gray-500 max-w-[160px]">
+                    <div className="flex justify-between">
+                      <span className="text-emerald-400">Asy</span>
+                      <span>{awayZones.serveZonesTo_ace.reduce((s,z) => s+z.count,0)}</span>
+                    </div>
+                  </div>
+                </div>
+                {awayZones.reception && awayZones.reception.att > 0 && (
+                  <div style={{ minWidth: 200 }}>
+                    <div className="text-xs font-medium text-gray-300 mb-2">🤲 Jakość przyjęć</div>
+                    {[
+                      { label: 'Perfekcyjne (#)', value: awayZones.reception.perfect, color: 'bg-blue-500', text: 'text-blue-400' },
+                      { label: 'Pozytywne (+)', value: awayZones.reception.positive, color: 'bg-green-500', text: 'text-green-400' },
+                      { label: 'Overpass (!)', value: awayZones.reception.overpass, color: 'bg-yellow-500', text: 'text-yellow-400' },
+                      { label: 'Negatywne (-)', value: awayZones.reception.negative, color: 'bg-orange-500', text: 'text-orange-400' },
+                      { label: 'Błąd (/)', value: awayZones.reception.error, color: 'bg-red-500', text: 'text-red-400' },
+                    ].map(row => (
+                      <div key={row.label} className="flex items-center gap-2 mb-1">
+                        <div className="w-24 text-gray-400 text-xs shrink-0">{row.label}</div>
+                        <div className="flex-1 bg-gray-800 rounded-full h-1.5">
+                          <div className={`h-1.5 rounded-full ${row.color}`}
+                            style={{ width: `${awayZones.reception!.att > 0 ? (row.value / awayZones.reception!.att) * 100 : 0}%` }} />
+                        </div>
+                        <div className={`w-5 text-right text-xs font-mono ${row.text}`}>{row.value}</div>
+                      </div>
+                    ))}
+                    <div className="text-xs text-gray-500 mt-1.5">
+                      Pos% <span className={pctColor(awayZones.reception.posPct, 60)}>{pct(awayZones.reception.posPct)}</span>
+                      {' · '} Avg <span className="text-white">{avg(awayZones.reception.avg)}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {filteredActions.length === 0 && (
+            <div className="text-center text-gray-500 py-12">Brak zarejestrowanych akcji</div>
           )}
         </div>
       )}

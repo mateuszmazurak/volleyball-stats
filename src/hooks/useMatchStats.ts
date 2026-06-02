@@ -204,20 +204,41 @@ export function useMatchStats(actions: Action[]) {
       }
     }).sort((a, b) => a.jersey_number - b.jersey_number)
 
-    // Team totals
-    const allAttack = actions.filter(a => a.action_type === 'A' || a.action_type === 'K')
-    const teamStats = {
-      attack: calcAttack(allAttack),
-      serve: calcServe(actions.filter(a => a.action_type === 'S')),
-      reception: calcReception(actions.filter(a => a.action_type === 'R')),
-      block: calcBlock(actions.filter(a => a.action_type === 'B')),
-      dig: calcDig(actions.filter(a => a.action_type === 'D')),
+    // Pomocnik: rozpoznaj akcje gości (prefix 'a' + cyfra)
+    const isAwayAction = (a: Action): boolean => {
+      const raw = a.raw_code?.trim() || ''
+      return /^[Aa]\d/.test(raw)
     }
+    const homeActions = actions.filter(a => !isAwayAction(a))
+    const awayActions = actions.filter(a => isAwayAction(a))
+
+    // Pomocnik: oblicz pełne statystyki drużyny z listy akcji
+    const calcTeamStats = (acts: Action[]) => ({
+      attack: calcAttack(acts.filter(a => a.action_type === 'A' || a.action_type === 'K')),
+      serve: calcServe(acts.filter(a => a.action_type === 'S')),
+      reception: calcReception(acts.filter(a => a.action_type === 'R')),
+      block: calcBlock(acts.filter(a => a.action_type === 'B')),
+      dig: calcDig(acts.filter(a => a.action_type === 'D')),
+    })
+
+    // Team totals — teraz osobno per drużyna + łącznie
+    const teamStats = calcTeamStats(actions)
+    const homeStats = calcTeamStats(homeActions)
+    const awayStats = calcTeamStats(awayActions)
 
     // Zone heatmaps
-    const zoneCount = (type: ActionType, field: 'zone_from' | 'zone_to') => {
+    // Heatmapy stref
+    const zoneCount = (
+      acts: Action[],
+      type: ActionType,
+      field: 'zone_from' | 'zone_to',
+      qualities?: string[]
+    ) => {
       const counts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 }
-      actions.filter(a => a.action_type === type && a[field]).forEach(a => { counts[a[field]!]++ })
+      acts
+        .filter(a => a.action_type === type && a[field])
+        .filter(a => !qualities || (a.quality && qualities.includes(a.quality)))
+        .forEach(a => { counts[a[field]!]++ })
       const total = Object.values(counts).reduce((s, v) => s + v, 0)
       return Object.entries(counts).map(([z, count]) => ({
         zone: parseInt(z), count,
@@ -228,9 +249,29 @@ export function useMatchStats(actions: Action[]) {
     return {
       playerStats,
       teamStats,
-      attackZonesFrom: zoneCount('A', 'zone_from'),
-      attackZonesTo: zoneCount('A', 'zone_to'),
-      serveZonesTo: zoneCount('S', 'zone_to'),
+      homeStats,
+      awayStats,
+      // Strefy per drużyna
+      home: {
+        attackZonesTo: zoneCount(homeActions, 'A', 'zone_to'),
+        attackZonesTo_kill: zoneCount(homeActions, 'A', 'zone_to', ['*', '#']),
+        attackZonesTo_err: zoneCount(homeActions, 'A', 'zone_to', ['/']),
+        serveZonesTo: zoneCount(homeActions, 'S', 'zone_to'),
+        serveZonesTo_ace: zoneCount(homeActions, 'S', 'zone_to', ['#', '*']),
+        reception: calcReception(homeActions.filter(a => a.action_type === 'R')),
+      },
+      away: {
+        attackZonesTo: zoneCount(awayActions, 'A', 'zone_to'),
+        attackZonesTo_kill: zoneCount(awayActions, 'A', 'zone_to', ['*', '#']),
+        attackZonesTo_err: zoneCount(awayActions, 'A', 'zone_to', ['/']),
+        serveZonesTo: zoneCount(awayActions, 'S', 'zone_to'),
+        serveZonesTo_ace: zoneCount(awayActions, 'S', 'zone_to', ['#', '*']),
+        reception: calcReception(awayActions.filter(a => a.action_type === 'R')),
+      },
+      // Legacy (cały mecz razem - używane w zakładce Drużyna)
+      attackZonesFrom: zoneCount(actions, 'A', 'zone_from'),
+      attackZonesTo: zoneCount(actions, 'A', 'zone_to'),
+      serveZonesTo: zoneCount(actions, 'S', 'zone_to'),
       totalActions: actions.length,
     }
   }, [actions])
