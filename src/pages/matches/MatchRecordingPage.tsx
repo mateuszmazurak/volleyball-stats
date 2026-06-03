@@ -65,7 +65,7 @@ const MatchRecordingPage: React.FC = () => {
   const [lastSaved, setLastSaved] = useState<string>('')
 
   // Panel tabs
-  const [rightTab, setRightTab] = useState<'rejestracja' | 'boisko' | 'log' | 'zawodnicy'>('rejestracja')
+  const [rightTab, setRightTab] = useState<'boisko' | 'log' | 'zawodnicy'>('log')
 
   // YouTube
   const playerRef = useRef<any>(null)
@@ -91,7 +91,7 @@ const MatchRecordingPage: React.FC = () => {
       if (activeSet) {
         setScoreHome(activeSet.score_home)
         setScoreAway(activeSet.score_away)
-        // Wczytaj serwującą drużynę z bazy (lub sessionStorage jako fallback)
+        // Serwujący z bazy
         if (activeSet.serving_team) {
           setServingTeam(activeSet.serving_team)
         } else {
@@ -119,6 +119,18 @@ const MatchRecordingPage: React.FC = () => {
 
       setHomeLineup(lineupToCourtPositions(homeL.map((l: any) => ({ player_id: l.player_id, start_position: l.start_position }))))
       setAwayLineup(lineupToCourtPositions(awayL.map((l: any) => ({ player_id: l.player_id, start_position: l.start_position }))))
+
+      // Wczytaj aktualny lineup z bazy — nadpisuje pozycje startowe gdy set jest w toku
+      if (activeSet?.home_lineup && Object.keys(activeSet.home_lineup).length > 0) {
+        const hl: Record<number, string> = {}
+        Object.entries(activeSet.home_lineup).forEach(([k, v]) => { hl[parseInt(k)] = v as string })
+        setHomeLineup(hl)
+      }
+      if (activeSet?.away_lineup && Object.keys(activeSet.away_lineup).length > 0) {
+        const al: Record<number, string> = {}
+        Object.entries(activeSet.away_lineup).forEach(([k, v]) => { al[parseInt(k)] = v as string })
+        setAwayLineup(al)
+      }
 
       // Load players from teams for substitutions
       const { data: hpFull } = await supabase.from('players').select('*').eq('team_id', matchData.home_team_id).order('jersey_number')
@@ -215,6 +227,15 @@ const MatchRecordingPage: React.FC = () => {
     return null
   }, [])
 
+  // Zapisz aktualny lineup do bazy
+  const saveLineupToDB = useCallback(async (hl: Record<number, string|null>, al: Record<number, string|null>) => {
+    if (!currentSet) return
+    await supabase.from('sets').update({
+      home_lineup: hl,
+      away_lineup: al,
+    }).eq('id', currentSet.id)
+  }, [currentSet])
+
   // Handle point scored — update score, rotation, save to DB
   const handlePoint = useCallback(async (scoringTeam: 'home' | 'away') => {
     const newScoreHome = scoringTeam === 'home' ? scoreHome + 1 : scoreHome
@@ -230,12 +251,31 @@ const MatchRecordingPage: React.FC = () => {
       setServingTeam(scoringTeam)
     }
 
-    // Update score AND serving team in DB
+    // Update score, serving team AND current lineup in DB
     if (currentSet) {
+      // Oblicz nowe lineup po rotacji (musimy użyć rotate() lokalnie bo setHomeLineup jest async)
+      const newHomeLineup = (scoringTeam === 'home' && scoringTeam !== servingTeam)
+        ? (() => {
+            const ROTATE_TO: Record<number,number> = {1:6,2:1,3:2,4:3,5:4,6:5}
+            const next: Record<number, string|null> = {}
+            for(let p=1;p<=6;p++) next[ROTATE_TO[p]] = homeLineup[p] ?? null
+            return next
+          })()
+        : homeLineup
+      const newAwayLineup = (scoringTeam === 'away' && scoringTeam !== servingTeam)
+        ? (() => {
+            const ROTATE_TO: Record<number,number> = {1:6,2:1,3:2,4:3,5:4,6:5}
+            const next: Record<number, string|null> = {}
+            for(let p=1;p<=6;p++) next[ROTATE_TO[p]] = awayLineup[p] ?? null
+            return next
+          })()
+        : awayLineup
       await supabase.from('sets').update({
         score_home: newScoreHome,
         score_away: newScoreAway,
         serving_team: newServingTeam,
+        home_lineup: newHomeLineup,
+        away_lineup: newAwayLineup,
       }).eq('id', currentSet.id)
     }
 
@@ -312,12 +352,16 @@ const MatchRecordingPage: React.FC = () => {
   const handleSubstitution = async () => {
     if (!subOutPlayer || !subInPlayer) return
     const lineup = subSide === 'home' ? homeLineup : awayLineup
-    const setLineup = subSide === 'home' ? setHomeLineup : setAwayLineup
-
     const zone = getPlayerZone(subOutPlayer, lineup)
     if (zone === null) return
-
-    setLineup(prev => ({ ...prev, [zone]: subInPlayer }))
+    const newLineup = { ...lineup, [zone]: subInPlayer }
+    if (subSide === 'home') {
+      setHomeLineup(newLineup)
+      await saveLineupToDB(newLineup, awayLineup)
+    } else {
+      setAwayLineup(newLineup)
+      await saveLineupToDB(homeLineup, newLineup)
+    }
     setShowSubModal(false)
     setSubOutPlayer('')
     setSubInPlayer('')
@@ -442,26 +486,51 @@ const MatchRecordingPage: React.FC = () => {
   const handleKeyDown = useCallback(async (e: KeyboardEvent) => {
     if (showSubModal || showSetEndModal) return
 
-    // TAB — nowa akcja, focus na pole kodu (NIE dotyka timestampów)
+    // TAB — nowa akcja, focus na pole kodu
     if (e.key === 'Tab') {
       e.preventDefault()
       inputRef.current?.focus()
       setInputCode('')
     }
 
-    // SPACJA — wyłącznie play/pause, BEZ wpływu na timestampy
+    // SPACJA — play/pause (tylko gdy focus NIE jest na polu kodu)
     if (e.key === ' ' && document.activeElement !== inputRef.current) {
       e.preventDefault()
       if (!playerRef.current || !ytReady) return
       const state = playerRef.current.getPlayerState?.()
-      if (state === 1) {
-        playerRef.current.pauseVideo()
-      } else {
-        playerRef.current.playVideo()
-      }
+      if (state === 1) playerRef.current.pauseVideo()
+      else playerRef.current.playVideo()
     }
 
-    // ENTER — zapisz akcję
+    // STRZAŁKA LEWO — cofnij wideo o 5 sekund
+    if (e.key === 'ArrowLeft' && document.activeElement !== inputRef.current) {
+      e.preventDefault()
+      if (!playerRef.current || !ytReady) return
+      const t = playerRef.current.getCurrentTime?.() || 0
+      playerRef.current.seekTo(Math.max(0, t - 5), true)
+    }
+
+    // STRZAŁKA PRAWO — przewiń wideo o 5 sekund
+    if (e.key === 'ArrowRight' && document.activeElement !== inputRef.current) {
+      e.preventDefault()
+      if (!playerRef.current || !ytReady) return
+      const t = playerRef.current.getCurrentTime?.() || 0
+      playerRef.current.seekTo(t + 5, true)
+    }
+
+    // [ — oznacz Start timestamp
+    if (e.key === '[' && document.activeElement !== inputRef.current) {
+      e.preventDefault()
+      markStart()
+    }
+
+    // ] — oznacz Stop timestamp
+    if (e.key === ']' && document.activeElement !== inputRef.current) {
+      e.preventDefault()
+      markEnd()
+    }
+
+    // ENTER — zapisz wymianę
     if (e.key === 'Enter' && document.activeElement === inputRef.current) {
       e.preventDefault()
       if (!inputCode.trim()) return
@@ -469,7 +538,7 @@ const MatchRecordingPage: React.FC = () => {
       setInputCode('')
       setYtStart(null); setYtEnd(null); setIsRecordingTime(false)
     }
-  }, [inputCode, ytReady, ytStart, ytEnd, saveRally, showSubModal, showSetEndModal])
+  }, [inputCode, ytReady, ytStart, ytEnd, saveRally, showSubModal, showSetEndModal, markStart, markEnd])
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown)
@@ -602,176 +671,298 @@ const MatchRecordingPage: React.FC = () => {
         </div>
       </div>
 
-      {/* ── MAIN CONTENT ── */}
+      {/* ── MAIN CONTENT — nowy układ: wideo 55%, panel 45% ── */}
       <div className="flex flex-1 overflow-hidden">
-        {/* LEFT: YouTube */}
-        <div className="w-1/2 bg-black flex flex-col shrink-0">
-          {match.youtube_url ? (
-            <div ref={playerContainerRef} className="w-full aspect-video" />
-          ) : (
-            <div className="flex-1 flex items-center justify-center text-gray-600 flex-col gap-2">
-              <div className="text-3xl">📹</div>
-              <div className="text-sm">Brak nagrania YouTube</div>
+        {/* LEFT: YouTube + timestamp controls — pełna wysokość */}
+        <div className="flex flex-col bg-black border-r border-gray-800" style={{ width: '55%' }}>
+          {/* Wideo — flex-1 żeby zajmowało całą dostępną przestrzeń */}
+          <div className="flex-1 relative">
+            {match.youtube_url ? (
+              <div ref={playerContainerRef} className="absolute inset-0 w-full h-full" />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center text-gray-600 flex-col gap-2">
+                <div className="text-4xl">📹</div>
+                <div className="text-sm">Brak nagrania YouTube</div>
+                <Link to={`/mecze/${id}/edytuj`} className="text-primary-400 text-xs hover:underline">Dodaj nagranie →</Link>
+              </div>
+            )}
+          </div>
+
+          {/* Timestamp bar — na dole pod wideo */}
+          <div className="bg-gray-900 border-t border-gray-700 px-3 py-2 shrink-0">
+            <div className="flex items-center gap-2 mb-1.5">
+              {/* Start */}
+              <button onClick={markStart} disabled={!ytReady}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                  ytStart !== null ? 'bg-green-800 text-green-200 border border-green-600' : 'bg-gray-800 hover:bg-green-900 text-gray-300 hover:text-green-300 border border-gray-600'
+                } disabled:opacity-40`}
+                title="[ lub kliknij"
+              >
+                <span>⏱</span><span>Start</span>
+                {ytStart !== null && <span className="font-mono text-green-300">{formatTime(ytStart)}</span>}
+              </button>
+
+              {/* Stop */}
+              <button onClick={markEnd} disabled={!ytReady || ytStart === null}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                  ytEnd !== null ? 'bg-red-900 text-red-200 border border-red-700' : 'bg-gray-800 hover:bg-red-900 text-gray-300 hover:text-red-300 border border-gray-600'
+                } disabled:opacity-40`}
+                title="] lub kliknij"
+              >
+                <span>⏹</span><span>Stop</span>
+                {ytEnd !== null && <span className="font-mono text-red-300">{formatTime(ytEnd)}</span>}
+              </button>
+
+              {(ytStart !== null || ytEnd !== null) && (
+                <button onClick={() => { setYtStart(null); setYtEnd(null); setIsRecordingTime(false) }}
+                  className="text-gray-600 hover:text-red-400 text-xs px-2 py-1.5 rounded hover:bg-gray-800"
+                >✕</button>
+              )}
+              {isRecordingTime && ytStart !== null && ytEnd === null && (
+                <span className="text-green-400 text-xs animate-pulse">● nagrywam...</span>
+              )}
             </div>
-          )}
-          {/* Timestamp controls + status */}
-          <div className="bg-gray-900 border-t border-gray-700 px-3 py-2 flex items-center gap-2">
-            {/* Start button */}
-            <button
-              onClick={markStart}
-              disabled={!ytReady}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                ytStart !== null
-                  ? 'bg-green-800 text-green-200 border border-green-600'
-                  : 'bg-gray-800 hover:bg-green-900 text-gray-300 hover:text-green-300 border border-gray-600'
-              } disabled:opacity-40 disabled:cursor-not-allowed`}
-              title="Oznacz czas startowy akcji"
-            >
-              <span className="text-base leading-none">⏱</span>
-              <span>Start</span>
-              {ytStart !== null && (
-                <span className="font-mono text-green-300 ml-1">{formatTime(ytStart)}</span>
-              )}
-            </button>
 
-            {/* End button */}
-            <button
-              onClick={markEnd}
-              disabled={!ytReady || ytStart === null}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                ytEnd !== null
-                  ? 'bg-red-900 text-red-200 border border-red-700'
-                  : 'bg-gray-800 hover:bg-red-900 text-gray-300 hover:text-red-300 border border-gray-600'
-              } disabled:opacity-40 disabled:cursor-not-allowed`}
-              title="Oznacz czas końcowy akcji"
-            >
-              <span className="text-base leading-none">⏹</span>
-              <span>Stop</span>
-              {ytEnd !== null && (
-                <span className="font-mono text-red-300 ml-1">{formatTime(ytEnd)}</span>
-              )}
-            </button>
-
-            {/* Reset timestamps */}
-            {(ytStart !== null || ytEnd !== null) && (
-              <button
-                onClick={() => { setYtStart(null); setYtEnd(null); setIsRecordingTime(false) }}
-                className="text-gray-600 hover:text-gray-400 text-xs px-2 py-1.5 rounded hover:bg-gray-800 transition-colors"
-                title="Wyczyść timestampy"
-              >✕</button>
-            )}
-
-            {isRecordingTime && ytStart !== null && ytEnd === null && (
-              <span className="text-green-400 text-xs animate-pulse ml-1">● nagrywam...</span>
-            )}
-
-            <div className="ml-auto flex gap-3 text-xs text-gray-600">
-              <span><kbd className="bg-gray-800 text-gray-500 px-1 rounded">TAB</kbd> nowa akcja</span>
-              <span><kbd className="bg-gray-800 text-gray-500 px-1 rounded">SPACJA</kbd> play/pause</span>
-              <span><kbd className="bg-gray-800 text-gray-500 px-1 rounded">ENTER</kbd> zapisz</span>
+            {/* Skróty klawiszowe */}
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-600">
+              <span><kbd className="bg-gray-800 text-gray-500 px-1 rounded text-xs">TAB</kbd> nowa akcja</span>
+              <span><kbd className="bg-gray-800 text-gray-500 px-1 rounded text-xs">SPACJA</kbd> play/pause</span>
+              <span><kbd className="bg-gray-800 text-gray-500 px-1 rounded text-xs">← →</kbd> ±5s</span>
+              <span><kbd className="bg-gray-800 text-gray-500 px-1 rounded text-xs">[</kbd> start ts</span>
+              <span><kbd className="bg-gray-800 text-gray-500 px-1 rounded text-xs">]</kbd> stop ts</span>
+              <span><kbd className="bg-gray-800 text-gray-500 px-1 rounded text-xs">ENTER</kbd> zapisz</span>
             </div>
           </div>
         </div>
 
-        {/* RIGHT: Tabs panel */}
-        <div className="w-1/2 flex flex-col border-l border-gray-700 overflow-hidden">
-          {/* Tab switcher */}
+        {/* RIGHT: Kod akcji (zawsze widoczny) + zakładki ── */}
+        <div className="flex flex-col border-l border-gray-700 overflow-hidden" style={{ width: '45%' }}>
+
+          {/* POLE KODU — zawsze widoczne na górze */}
+          <div className="bg-gray-900 border-b border-gray-700 px-4 py-3 shrink-0">
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Kod akcji</label>
+              {saved && <span className="text-green-400 text-xs animate-pulse font-semibold">✓ Zapisano</span>}
+            </div>
+            <input
+              ref={inputRef}
+              type="text"
+              className="input font-mono text-base tracking-wider"
+              placeholder="np. 8S6F- / a13R+ / a7A4H*"
+              value={inputCode}
+              onChange={e => setInputCode(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {preview && (
+              <div className={`mt-2 p-2.5 rounded-lg text-xs ${preview.error ? 'bg-red-900/30 border border-red-700' : 'bg-gray-800'}`}>
+                {preview.error ? (
+                  <span className="text-red-400">⚠ {preview.error}</span>
+                ) : (
+                  <div>
+                    <div className="text-white leading-relaxed mb-1.5">{describeRally(preview)}</div>
+                    <div className="flex gap-1.5 flex-wrap items-center">
+                      {preview.actions.map((a, i) => (
+                        <span key={i} className="bg-gray-700 px-1.5 py-0.5 rounded font-mono text-gray-300">
+                          #{a.playerNumber} {ACTION_LABELS[a.actionType]}
+                          {a.quality && <span className={`ml-1 ${QUALITY_COLORS[a.quality]}`}>{QUALITY_LABELS[a.quality]}</span>}
+                        </span>
+                      ))}
+                      {(() => {
+                        const scoring = determineScoringTeam(preview)
+                        if (!scoring) return null
+                        const teamName = scoring === 'home' ? match?.home_team?.short_name : match?.away_team?.short_name
+                        const color = scoring === 'home' ? 'bg-blue-900 text-blue-300 border-blue-700' : 'bg-orange-900 text-orange-300 border-orange-700'
+                        return <span className={`ml-auto text-xs px-2 py-0.5 rounded border font-semibold ${color}`}>🏆 → {teamName}</span>
+                      })()}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            {lastSaved && !saved && (
+              <div className="mt-1 text-xs text-gray-700 font-mono truncate">↩ {lastSaved}</div>
+            )}
+          </div>
+
+          {/* ZAKŁADKI — Boisko / Log / Składy */}
           <div className="flex border-b border-gray-700 bg-gray-900 shrink-0">
-            {([['rejestracja', '📝 Rejestracja'], ['boisko', '🏐 Boisko'], ['log', '📋 Log'], ['zawodnicy', '👥 Składy']] as const).map(([t, label]) => (
+            {([['boisko', '🏐 Boisko'], ['log', '📋 Log'], ['zawodnicy', '👥 Składy']] as const).map(([t, label]) => (
               <button
                 key={t}
-                onClick={() => setRightTab(t)}
+                onClick={() => setRightTab(t as any)}
                 className={`flex-1 py-2 text-sm font-medium transition-colors ${rightTab === t ? 'bg-gray-800 text-white border-b-2 border-primary-500' : 'text-gray-500 hover:text-gray-300'}`}
               >{label}</button>
             ))}
           </div>
 
-          {/* TAB: REJESTRACJA */}
-          {rightTab === 'rejestracja' && (
-            <div className="flex flex-col flex-1 overflow-hidden">
-              <div className="p-4 border-b border-gray-700 bg-gray-900 shrink-0">
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-medium text-gray-300">Kod akcji</label>
-                  {saved && <span className="text-green-400 text-sm animate-pulse">✓ Zapisano</span>}
-                </div>
-                <input
-                  ref={inputRef}
-                  type="text"
-                  className="input font-mono text-base tracking-wider"
-                  placeholder="np. 2S2H / 5R+ / 6E3Q / 10A6H*"
-                  value={inputCode}
-                  onChange={e => setInputCode(e.target.value)}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-                {preview && (
-                  <div className={`mt-2 p-2.5 rounded-lg text-sm ${preview.error ? 'bg-red-900/30 border border-red-700' : 'bg-gray-800'}`}>
-                    {preview.error ? (
-                      <span className="text-red-400 text-xs">⚠ {preview.error}</span>
-                    ) : (
-                      <div>
-                        <div className="text-gray-400 text-xs mb-1">Podgląd:</div>
-                        <div className="text-white text-xs leading-relaxed">{describeRally(preview)}</div>
-                        <div className="flex gap-1.5 mt-1.5 flex-wrap items-center">
-                          {preview.actions.map((a, i) => (
-                            <span key={i} className="bg-gray-700 text-xs px-1.5 py-0.5 rounded font-mono text-gray-300">
-                              #{a.playerNumber} {ACTION_LABELS[a.actionType]}
-                              {a.quality && <span className={`ml-1 ${QUALITY_COLORS[a.quality]}`}>{QUALITY_LABELS[a.quality]}</span>}
-                            </span>
-                          ))}
-                          {(() => {
-                            const scoring = determineScoringTeam(preview)
-                            if (!scoring) return null
-                            const teamName = scoring === 'home' ? match?.home_team?.short_name : match?.away_team?.short_name
-                            const color = scoring === 'home' ? 'bg-blue-900 text-blue-300 border-blue-700' : 'bg-orange-900 text-orange-300 border-orange-700'
-                            return (
-                              <span className={`ml-auto text-xs px-2 py-0.5 rounded border font-semibold ${color}`}>
-                                🏆 Punkt → {teamName}
+          {/* Log wymian — zawsze widoczny pod polem kodu gdy aktywna zakładka Boisko lub Log */}
+          {(rightTab === 'boisko' || rightTab === 'log') && rightTab === 'log' && (
+            <div className="flex-1 overflow-y-auto p-3">
+              <div className="text-xs text-gray-600 mb-2 uppercase tracking-wider">Wymiany w secie — {rallyIndex} łącznie</div>
+              {rallyList.length === 0 ? (
+                <div className="text-center text-gray-700 text-sm py-8">Brak wymian — wpisz kod i naciśnij ENTER</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {rallyList.map((rally, ri) => {
+                    const sorted = [...rally].sort((a, b) => a.action_index - b.action_index)
+                    const first = sorted[0]
+                    return (
+                      <div key={ri} className="bg-gray-900 border border-gray-800 rounded-lg p-2.5 text-xs">
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <span className="text-gray-700 font-mono">#{first.rally_index + 1}</span>
+                          {first.yt_start !== null && (
+                            <button
+                              onClick={() => { if (playerRef.current && ytReady) { playerRef.current.seekTo(first.yt_start!, true); playerRef.current.playVideo() } }}
+                              className="text-red-400 hover:text-red-300 flex items-center gap-1 text-xs"
+                            >▶ {formatTime(first.yt_start!)}</button>
+                          )}
+                          <button
+                            onClick={() => { if (window.confirm(`Usunąć wymianę #${first.rally_index + 1}?`)) deleteRally(first.rally_index) }}
+                            className="ml-auto text-gray-700 hover:text-red-400 px-1.5 py-0.5 rounded hover:bg-gray-800 text-xs"
+                            title="Usuń (tylko ostatnia)"
+                          >🗑</button>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {sorted.map((a, ai) => (
+                            <div key={ai} className="flex items-center gap-0.5">
+                              {ai > 0 && <span className="text-gray-700">→</span>}
+                              <span className="bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded font-mono">
+                                <span className="text-blue-400">#{(a as any).player?.jersey_number || '?'}</span>
+                                {' '}{ACTION_LABELS[a.action_type]}
+                                {a.quality && <span className={`ml-0.5 font-bold ${QUALITY_COLORS[a.quality]}`}>{QUALITY_LABELS[a.quality]}</span>}
                               </span>
-                            )
-                          })()}
+                            </div>
+                          ))}
                         </div>
                       </div>
-                    )}
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB: BOISKO + LOG */}
+          {rightTab === 'boisko' && (
+            <div className="flex-1 overflow-y-auto">
+              {/* Boisko */}
+              <div className="p-3 border-b border-gray-800">
+                <div className="grid grid-cols-2 gap-4 mb-3">
+                  <CourtView
+                    lineup={homeLineup}
+                    players={homePlayers}
+                    teamName={match.home_team?.name}
+                    teamSide="home"
+                    isServing={servingTeam === 'home'}
+                    compact
+                  />
+                  <CourtView
+                    lineup={awayLineup}
+                    players={awayPlayers}
+                    teamName={match.away_team?.name}
+                    teamSide="away"
+                    isServing={servingTeam === 'away'}
+                    compact
+                  />
+                </div>
+
+                {/* Zmiana zawodników */}
+                <div className="flex gap-2 mb-3">
+                  <button onClick={() => { setSubSide('home'); setShowSubModal(true) }}
+                    className="btn-secondary text-xs flex-1 py-1.5"
+                  >↔ {match.home_team?.short_name}</button>
+                  <button onClick={() => { setSubSide('away'); setShowSubModal(true) }}
+                    className="btn-secondary text-xs flex-1 py-1.5"
+                  >↔ {match.away_team?.short_name}</button>
+                </div>
+
+                {/* Ręczna korekta rotacji */}
+                <div className="bg-gray-900 rounded-lg p-2.5 border border-gray-700">
+                  <div className="text-xs text-gray-500 mb-2 flex items-center gap-1.5">
+                    <span>🔧</span>
+                    <span className="uppercase tracking-wider">Ręczna korekta rotacji</span>
+                    <span className="text-gray-700">— użyj gdy rotacja się rozjechała</span>
                   </div>
-                )}
-                {lastSaved && !saved && (
-                  <div className="mt-1 text-xs text-gray-600 font-mono truncate">Ostatnie: {lastSaved}</div>
-                )}
+                  <div className="grid grid-cols-2 gap-2">
+                    {/* Home rotations */}
+                    <div>
+                      <div className="text-xs text-blue-400 font-medium mb-1.5">{match.home_team?.short_name}</div>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => {
+                            const BACK: Record<number,number> = {1:2,2:3,3:4,4:5,5:6,6:1}
+                            const next: Record<number,string|null> = {}
+                            for(let p=1;p<=6;p++) next[BACK[p]] = homeLineup[p] ?? null
+                            setHomeLineup(next)
+                            saveLineupToDB(next, awayLineup)
+                          }}
+                          className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs py-1.5 rounded border border-gray-600 transition-colors"
+                          title="Cofnij rotację o 1"
+                        >◀ Wstecz</button>
+                        <button
+                          onClick={() => {
+                            const FORWARD: Record<number,number> = {1:6,2:1,3:2,4:3,5:4,6:5}
+                            const next: Record<number,string|null> = {}
+                            for(let p=1;p<=6;p++) next[FORWARD[p]] = homeLineup[p] ?? null
+                            setHomeLineup(next)
+                            saveLineupToDB(next, awayLineup)
+                          }}
+                          className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs py-1.5 rounded border border-gray-600 transition-colors"
+                          title="Przesuń rotację o 1 do przodu"
+                        >Przód ▶</button>
+                      </div>
+                    </div>
+                    {/* Away rotations */}
+                    <div>
+                      <div className="text-xs text-orange-400 font-medium mb-1.5">{match.away_team?.short_name}</div>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => {
+                            const BACK: Record<number,number> = {1:2,2:3,3:4,4:5,5:6,6:1}
+                            const next: Record<number,string|null> = {}
+                            for(let p=1;p<=6;p++) next[BACK[p]] = awayLineup[p] ?? null
+                            setAwayLineup(next)
+                            saveLineupToDB(homeLineup, next)
+                          }}
+                          className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs py-1.5 rounded border border-gray-600 transition-colors"
+                        >◀ Wstecz</button>
+                        <button
+                          onClick={() => {
+                            const FORWARD: Record<number,number> = {1:6,2:1,3:2,4:3,5:4,6:5}
+                            const next: Record<number,string|null> = {}
+                            for(let p=1;p<=6;p++) next[FORWARD[p]] = awayLineup[p] ?? null
+                            setAwayLineup(next)
+                            saveLineupToDB(homeLineup, next)
+                          }}
+                          className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs py-1.5 rounded border border-gray-600 transition-colors"
+                        >Przód ▶</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              {/* Rally log */}
-              <div className="flex-1 overflow-y-auto p-3">
-                <div className="text-xs text-gray-600 mb-2 uppercase tracking-wider">Wymiany w secie — {rallyIndex} łącznie</div>
+              {/* Log wymian pod boiskiem */}
+              <div className="p-3">
+                <div className="text-xs text-gray-600 mb-2 uppercase tracking-wider">Wymiany — {rallyIndex} łącznie</div>
                 {rallyList.length === 0 ? (
-                  <div className="text-center text-gray-700 text-sm py-8">Naciśnij TAB aby zacząć</div>
+                  <div className="text-center text-gray-700 text-sm py-4">Brak wymian</div>
                 ) : (
                   <div className="space-y-1.5">
                     {rallyList.map((rally, ri) => {
                       const sorted = [...rally].sort((a, b) => a.action_index - b.action_index)
                       const first = sorted[0]
                       return (
-                        <div key={ri} className="bg-gray-900 border border-gray-800 rounded-lg p-2.5 text-xs">
-                          <div className="flex items-center gap-2 mb-1.5">
+                        <div key={ri} className="bg-gray-900 border border-gray-800 rounded-lg p-2 text-xs">
+                          <div className="flex items-center gap-2 mb-1">
                             <span className="text-gray-700 font-mono">#{first.rally_index + 1}</span>
                             {first.yt_start !== null && (
-                              <button
-                                onClick={() => { if (playerRef.current && ytReady) { playerRef.current.seekTo(first.yt_start!, true); playerRef.current.playVideo() } }}
-                                className="text-red-400 hover:text-red-300 flex items-center gap-1 text-xs"
-                              >▶ {formatTime(first.yt_start!)}</button>
+                              <button onClick={() => { if (playerRef.current && ytReady) { playerRef.current.seekTo(first.yt_start!, true); playerRef.current.playVideo() } }}
+                                className="text-red-400 hover:text-red-300 text-xs">▶ {formatTime(first.yt_start!)}</button>
                             )}
-                            <span className="text-gray-700 text-xs">
-                              {(first as any).rotation_state !== null ? `${Math.floor((first as any).rotation_state / 100)}:${(first as any).rotation_state % 100}` : ''}
-                            </span>
-                            <button
-                              onClick={() => {
-                                if (window.confirm(`Usunąć wymianę #${first.rally_index + 1}?`)) {
-                                  deleteRally(first.rally_index)
-                                }
-                              }}
-                              className="ml-auto text-gray-700 hover:text-red-400 px-1.5 py-0.5 rounded hover:bg-gray-800 transition-colors text-xs"
-                              title="Usuń wymianę"
-                            >🗑</button>
+                            <button onClick={() => { if (window.confirm(`Usunąć wymianę #${first.rally_index + 1}?`)) deleteRally(first.rally_index) }}
+                              className="ml-auto text-gray-700 hover:text-red-400 px-1 rounded hover:bg-gray-800 text-xs">🗑</button>
                           </div>
                           <div className="flex flex-wrap gap-1">
                             {sorted.map((a, ai) => (
@@ -794,69 +985,25 @@ const MatchRecordingPage: React.FC = () => {
             </div>
           )}
 
-          {/* TAB: BOISKO */}
-          {rightTab === 'boisko' && (
-            <div className="flex-1 overflow-y-auto p-4">
-              <div className="grid grid-cols-2 gap-6">
-                <CourtView
-                  lineup={homeLineup}
-                  players={homePlayers}
-                  teamName={match.home_team?.name}
-                  teamSide="home"
-                  isServing={servingTeam === 'home'}
-                  compact
-                />
-                <CourtView
-                  lineup={awayLineup}
-                  players={awayPlayers}
-                  teamName={match.away_team?.name}
-                  teamSide="away"
-                  isServing={servingTeam === 'away'}
-                  compact
-                />
-              </div>
-
-              <div className="mt-4 flex gap-2">
-                <button
-                  onClick={() => { setSubSide('home'); setShowSubModal(true) }}
-                  className="btn-secondary text-sm flex-1"
-                >↔ Zmiana {match.home_team?.short_name}</button>
-                <button
-                  onClick={() => { setSubSide('away'); setShowSubModal(true) }}
-                  className="btn-secondary text-sm flex-1"
-                >↔ Zmiana {match.away_team?.short_name}</button>
-              </div>
-            </div>
-          )}
-
-          {/* TAB: LOG */}
+          {/* TAB: LOG — szczegółowa lista wszystkich akcji */}
           {rightTab === 'log' && (
-            <div className="flex-1 overflow-y-auto p-4">
-              <div className="text-xs text-gray-600 mb-3 uppercase">Wszystkie akcje w secie</div>
-              <div className="space-y-1">
+            <div className="flex-1 overflow-y-auto p-3">
+              <div className="text-xs text-gray-600 mb-2 uppercase tracking-wider">Akcje w secie — {actions.length} łącznie</div>
+              <div className="space-y-0.5">
                 {[...actions].reverse().map(a => (
-                  <div key={a.id} className="flex items-center gap-2 text-xs py-1 border-b border-gray-800">
-                    <span className="font-mono text-gray-600 w-6 text-right">{a.rally_index + 1}</span>
-                    <span className="font-mono text-blue-400 w-6">#{(a as any).player?.jersey_number || '?'}</span>
-                    <span className="text-gray-300 w-20">{ACTION_LABELS[a.action_type]}</span>
-                    {a.quality && <span className={QUALITY_COLORS[a.quality]}>{QUALITY_LABELS[a.quality]}</span>}
-                    {a.zone_from && <span className="text-gray-600">S{a.zone_from}</span>}
-                    {a.zone_to && <span className="text-gray-600">→S{a.zone_to}</span>}
-                    <div className="ml-auto flex items-center gap-2">
+                  <div key={a.id} className="flex items-center gap-2 text-xs py-1.5 border-b border-gray-800/50">
+                    <span className="font-mono text-gray-700 w-5 text-right shrink-0">{a.rally_index + 1}</span>
+                    <span className="font-mono text-blue-400 w-6 shrink-0">#{(a as any).player?.jersey_number || '?'}</span>
+                    <span className="text-gray-300 w-16 shrink-0">{ACTION_LABELS[a.action_type]}</span>
+                    {a.quality && <span className={`font-bold ${QUALITY_COLORS[a.quality]}`}>{QUALITY_LABELS[a.quality]}</span>}
+                    {a.zone_to && <span className="text-gray-600 text-xs">→Z{a.zone_to}</span>}
+                    <div className="ml-auto flex items-center gap-1.5 shrink-0">
                       {a.yt_start !== null && (
-                        <button
-                          onClick={() => { if (playerRef.current && ytReady) { playerRef.current.seekTo(a.yt_start!, true); playerRef.current.playVideo() } }}
-                          className="text-red-400 hover:text-red-300 text-xs"
-                        >▶ {formatTime(a.yt_start!)}</button>
+                        <button onClick={() => { if (playerRef.current && ytReady) { playerRef.current.seekTo(a.yt_start!, true); playerRef.current.playVideo() } }}
+                          className="text-red-400 hover:text-red-300 text-xs">▶ {formatTime(a.yt_start!)}</button>
                       )}
-                      <button
-                        onClick={async () => {
-                          await supabase.from('actions').delete().eq('id', a.id)
-                          setActions(prev => prev.filter(x => x.id !== a.id))
-                        }}
-                        className="text-gray-700 hover:text-red-400 px-1 rounded hover:bg-gray-800 transition-colors"
-                        title="Usuń akcję"
-                      >🗑</button>
+                      <button onClick={async () => { await supabase.from('actions').delete().eq('id', a.id); setActions(prev => prev.filter(x => x.id !== a.id)) }}
+                        className="text-gray-700 hover:text-red-400 px-1 rounded hover:bg-gray-800 text-xs" title="Usuń akcję">🗑</button>
                     </div>
                   </div>
                 ))}
